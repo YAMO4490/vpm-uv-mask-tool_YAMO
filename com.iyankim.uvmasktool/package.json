@@ -1,7 +1,7 @@
 {
 	"name": "com.iyankim.uvmasktool",
 	"displayName": "Iyan-Kim UV Mask Tool",
-	"version": "1.0.0",
+	"version": "1.1.0",
 	"unity": "2022.3",
 	"description": "Unity Editor tool for selecting UV islands by material slot and exporting them as PNG mask textures.",
 	"author": {
