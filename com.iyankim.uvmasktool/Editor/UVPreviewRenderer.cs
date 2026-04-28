@@ -9,10 +9,8 @@ namespace IyanKim.UVMaskTool.Editor
         private static readonly Color Background = new Color(0.12f, 0.12f, 0.12f, 1f);
         private static readonly Color GridMajor = new Color(1f, 1f, 1f, 0.12f);
         private static readonly Color GridMinor = new Color(1f, 1f, 1f, 0.05f);
-        private static readonly Color IslandFill = new Color(0.55f, 0.58f, 0.62f, 0.28f);
         private static readonly Color HoverFill = new Color(0.72f, 0.86f, 1f, 0.55f);
         private static readonly Color SelectedFill = new Color(1f, 0.67f, 0.15f, 0.72f);
-        private static readonly Color WireColor = new Color(0.88f, 0.88f, 0.88f, 0.58f);
 
         public readonly struct ViewTransform
         {
@@ -157,24 +155,37 @@ namespace IyanKim.UVMaskTool.Editor
 
         public static void Draw(
             Rect previewRect,
-            Mesh mesh,
             int[] meshTriangles,
-            List<Vector2> uvs,
+            Vector2[] uvs,
             List<UVIsland> islands,
-            HashSet<int> selectedIslandIds,
+            HashSet<int> selectedTriangleIndices,
+            int hoverTriangleIndex,
             int hoverIslandId,
+            Vector2Int[] wireEdges,
+            bool showWireframe,
+            Color wireframeColor,
+            Texture2D previewTexture,
+            float previewTextureAlpha,
             ViewTransform transform)
         {
             EditorGUI.DrawRect(previewRect, Background);
             GUI.BeginClip(previewRect);
+
+            DrawTextureOverlay(previewTexture, previewTextureAlpha, transform);
+
             Handles.BeginGUI();
 
             DrawGrid(new Rect(0f, 0f, previewRect.width, previewRect.height), transform);
 
-            if (mesh != null && meshTriangles != null && uvs != null && islands != null)
+            if (meshTriangles != null && uvs != null)
             {
-                DrawIslandFills(meshTriangles, uvs, islands, selectedIslandIds, hoverIslandId, transform);
-                DrawWireframe(meshTriangles, uvs, transform);
+                var screenUvs = BuildScreenUvs(uvs, transform);
+                DrawHoverFills(meshTriangles, screenUvs, islands, selectedTriangleIndices, hoverTriangleIndex, hoverIslandId);
+                DrawSelectedFills(meshTriangles, screenUvs, selectedTriangleIndices);
+                if (showWireframe)
+                {
+                    DrawWireframe(wireEdges, meshTriangles, screenUvs, wireframeColor);
+                }
             }
 
             Handles.EndGUI();
@@ -203,56 +214,247 @@ namespace IyanKim.UVMaskTool.Editor
             EditorGUI.DrawRect(new Rect(localRect.width - 1f, 0f, 1f, localRect.height), GridMajor);
         }
 
-        private static void DrawIslandFills(
-            int[] meshTriangles,
-            List<Vector2> uvs,
-            List<UVIsland> islands,
-            HashSet<int> selectedIslandIds,
-            int hoverIslandId,
-            ViewTransform transform)
+        public static Rect[] BuildTriangleBounds(int[] meshTriangles, List<Vector2> uvs)
         {
+            if (meshTriangles == null || uvs == null || meshTriangles.Length < 3)
+            {
+                return new Rect[0];
+            }
+
+            var triangleCount = meshTriangles.Length / 3;
+            var bounds = new Rect[triangleCount];
+            for (var triangleIndex = 0; triangleIndex < triangleCount; triangleIndex++)
+            {
+                var baseIndex = triangleIndex * 3;
+                var a = meshTriangles[baseIndex];
+                var b = meshTriangles[baseIndex + 1];
+                var c = meshTriangles[baseIndex + 2];
+                if (!IsValidVertexIndex(a, uvs.Count) || !IsValidVertexIndex(b, uvs.Count) || !IsValidVertexIndex(c, uvs.Count))
+                {
+                    bounds[triangleIndex] = new Rect(0f, 0f, 0f, 0f);
+                    continue;
+                }
+
+                var uvA = uvs[a];
+                var uvB = uvs[b];
+                var uvC = uvs[c];
+                var minX = Mathf.Min(uvA.x, Mathf.Min(uvB.x, uvC.x));
+                var minY = Mathf.Min(uvA.y, Mathf.Min(uvB.y, uvC.y));
+                var maxX = Mathf.Max(uvA.x, Mathf.Max(uvB.x, uvC.x));
+                var maxY = Mathf.Max(uvA.y, Mathf.Max(uvB.y, uvC.y));
+                bounds[triangleIndex] = Rect.MinMaxRect(minX, minY, maxX, maxY);
+            }
+
+            return bounds;
+        }
+
+        public static int[] BuildIslandMembership(List<UVIsland> islands, int triangleCount)
+        {
+            var membership = new int[triangleCount];
+            for (var i = 0; i < membership.Length; i++)
+            {
+                membership[i] = -1;
+            }
+
+            if (islands == null)
+            {
+                return membership;
+            }
+
             for (var i = 0; i < islands.Count; i++)
             {
                 var island = islands[i];
-                var color = IslandFill;
-                if (selectedIslandIds != null && selectedIslandIds.Contains(island.id))
-                {
-                    color = SelectedFill;
-                }
-                else if (island.id == hoverIslandId)
-                {
-                    color = HoverFill;
-                }
-
-                Handles.color = color;
                 for (var t = 0; t < island.triangleIndices.Count; t++)
                 {
                     var triangleIndex = island.triangleIndices[t];
-                    var baseIndex = triangleIndex * 3;
-                    var a = transform.UvToScreen(uvs[meshTriangles[baseIndex]]);
-                    var b = transform.UvToScreen(uvs[meshTriangles[baseIndex + 1]]);
-                    var c = transform.UvToScreen(uvs[meshTriangles[baseIndex + 2]]);
-                    Handles.DrawAAConvexPolygon(a, b, c);
+                    if (triangleIndex >= 0 && triangleIndex < membership.Length)
+                    {
+                        membership[triangleIndex] = island.id;
+                    }
                 }
+            }
+
+            return membership;
+        }
+
+        public static Vector2Int[] BuildWireEdges(int[] meshTriangles)
+        {
+            if (meshTriangles == null || meshTriangles.Length < 2)
+            {
+                return new Vector2Int[0];
+            }
+
+            var seen = new HashSet<ulong>();
+            var edges = new List<Vector2Int>(meshTriangles.Length);
+            for (var i = 0; i + 2 < meshTriangles.Length; i += 3)
+            {
+                AddWireEdge(meshTriangles[i], meshTriangles[i + 1], seen, edges);
+                AddWireEdge(meshTriangles[i + 1], meshTriangles[i + 2], seen, edges);
+                AddWireEdge(meshTriangles[i + 2], meshTriangles[i], seen, edges);
+            }
+
+            return edges.ToArray();
+        }
+
+        private static void DrawHoverFills(
+            int[] meshTriangles,
+            Vector2[] screenUvs,
+            List<UVIsland> islands,
+            HashSet<int> selectedTriangleIndices,
+            int hoverTriangleIndex,
+            int hoverIslandId)
+        {
+            Handles.color = HoverFill;
+
+            if (hoverIslandId >= 0 && islands != null && hoverIslandId < islands.Count)
+            {
+                var hoveredIsland = islands[hoverIslandId];
+                for (var i = 0; i < hoveredIsland.triangleIndices.Count; i++)
+                {
+                    var triangleIndex = hoveredIsland.triangleIndices[i];
+                    if (selectedTriangleIndices != null && selectedTriangleIndices.Contains(triangleIndex))
+                    {
+                        continue;
+                    }
+
+                    DrawTriangle(meshTriangles, screenUvs, triangleIndex);
+                }
+                return;
+            }
+
+            if (hoverTriangleIndex >= 0 && (selectedTriangleIndices == null || !selectedTriangleIndices.Contains(hoverTriangleIndex)))
+            {
+                DrawTriangle(meshTriangles, screenUvs, hoverTriangleIndex);
             }
         }
 
-        private static void DrawWireframe(int[] meshTriangles, List<Vector2> uvs, ViewTransform transform)
+        private static void DrawSelectedFills(
+            int[] meshTriangles,
+            Vector2[] screenUvs,
+            HashSet<int> selectedTriangleIndices)
         {
-            Handles.color = WireColor;
-            for (var i = 0; i < meshTriangles.Length; i += 3)
+            if (selectedTriangleIndices == null || selectedTriangleIndices.Count == 0)
             {
-                var a = transform.UvToScreen(uvs[meshTriangles[i]]);
-                var b = transform.UvToScreen(uvs[meshTriangles[i + 1]]);
-                var c = transform.UvToScreen(uvs[meshTriangles[i + 2]]);
-                Handles.DrawAAPolyLine(1.4f, a, b, c, a);
+                return;
             }
+
+            Handles.color = SelectedFill;
+            foreach (var triangleIndex in selectedTriangleIndices)
+            {
+                DrawTriangle(meshTriangles, screenUvs, triangleIndex);
+            }
+        }
+
+        private static void DrawWireframe(Vector2Int[] wireEdges, int[] meshTriangles, Vector2[] screenUvs, Color wireframeColor)
+        {
+            Handles.color = wireframeColor;
+            if (wireEdges == null || wireEdges.Length == 0)
+            {
+                for (var i = 0; i < meshTriangles.Length; i += 3)
+                {
+                    var a = meshTriangles[i];
+                    var b = meshTriangles[i + 1];
+                    var c = meshTriangles[i + 2];
+                    if (!IsValidVertexIndex(a, screenUvs.Length) || !IsValidVertexIndex(b, screenUvs.Length) || !IsValidVertexIndex(c, screenUvs.Length))
+                    {
+                        continue;
+                    }
+
+                    Handles.DrawAAPolyLine(1.4f, screenUvs[a], screenUvs[b], screenUvs[c], screenUvs[a]);
+                }
+                return;
+            }
+
+            for (var i = 0; i < wireEdges.Length; i++)
+            {
+                var edge = wireEdges[i];
+                if (!IsValidVertexIndex(edge.x, screenUvs.Length) || !IsValidVertexIndex(edge.y, screenUvs.Length))
+                {
+                    continue;
+                }
+
+                Handles.DrawAAPolyLine(1.2f, screenUvs[edge.x], screenUvs[edge.y]);
+            }
+        }
+
+        private static void DrawTextureOverlay(Texture2D previewTexture, float alpha, ViewTransform transform)
+        {
+            if (previewTexture == null || alpha <= 0.001f)
+            {
+                return;
+            }
+
+            var topLeft = transform.UvToScreen(new Vector2(0f, 1f));
+            var bottomRight = transform.UvToScreen(new Vector2(1f, 0f));
+            var rect = Rect.MinMaxRect(topLeft.x, topLeft.y, bottomRight.x, bottomRight.y);
+            if (rect.width <= 0.001f || rect.height <= 0.001f)
+            {
+                return;
+            }
+
+            var previousColor = GUI.color;
+            GUI.color = new Color(1f, 1f, 1f, Mathf.Clamp01(alpha));
+            GUI.DrawTextureWithTexCoords(rect, previewTexture, new Rect(0f, 0f, 1f, 1f), true);
+            GUI.color = previousColor;
+        }
+
+        private static Vector2[] BuildScreenUvs(Vector2[] uvs, ViewTransform transform)
+        {
+            var screenUvs = new Vector2[uvs.Length];
+            for (var i = 0; i < uvs.Length; i++)
+            {
+                screenUvs[i] = transform.UvToScreen(uvs[i]);
+            }
+
+            return screenUvs;
+        }
+
+        private static void DrawTriangle(int[] meshTriangles, Vector2[] screenUvs, int triangleIndex)
+        {
+            var baseIndex = triangleIndex * 3;
+            if (triangleIndex < 0 || baseIndex + 2 >= meshTriangles.Length)
+            {
+                return;
+            }
+
+            var a = meshTriangles[baseIndex];
+            var b = meshTriangles[baseIndex + 1];
+            var c = meshTriangles[baseIndex + 2];
+            if (!IsValidVertexIndex(a, screenUvs.Length) || !IsValidVertexIndex(b, screenUvs.Length) || !IsValidVertexIndex(c, screenUvs.Length))
+            {
+                return;
+            }
+
+            Handles.DrawAAConvexPolygon(screenUvs[a], screenUvs[b], screenUvs[c]);
         }
 
         private static void DrawUvLine(ViewTransform transform, Vector2 fromUv, Vector2 toUv, Color color, float width)
         {
             Handles.color = color;
             Handles.DrawAAPolyLine(width, transform.UvToScreen(fromUv), transform.UvToScreen(toUv));
+        }
+
+        private static bool IsValidVertexIndex(int index, int count)
+        {
+            return index >= 0 && index < count;
+        }
+
+        private static void AddWireEdge(int a, int b, HashSet<ulong> seen, List<Vector2Int> edges)
+        {
+            if (a == b)
+            {
+                return;
+            }
+
+            var min = Mathf.Min(a, b);
+            var max = Mathf.Max(a, b);
+            var key = ((ulong)(uint)min << 32) | (uint)max;
+            if (!seen.Add(key))
+            {
+                return;
+            }
+
+            edges.Add(new Vector2Int(min, max));
         }
     }
 }

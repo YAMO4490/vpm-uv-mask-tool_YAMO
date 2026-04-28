@@ -44,6 +44,42 @@ namespace IyanKim.UVMaskTool.Editor
             Color fgColor,
             int aaScale)
         {
+            if (islands == null)
+            {
+                throw new ArgumentNullException(nameof(islands));
+            }
+
+            var selectedTriangleIndices = new HashSet<int>();
+            if (selectedIds != null)
+            {
+                for (var i = 0; i < islands.Count; i++)
+                {
+                    var island = islands[i];
+                    if (!selectedIds.Contains(island.id))
+                    {
+                        continue;
+                    }
+
+                    for (var t = 0; t < island.triangleIndices.Count; t++)
+                    {
+                        selectedTriangleIndices.Add(island.triangleIndices[t]);
+                    }
+                }
+            }
+
+            return Rasterize(mesh, meshTriangles, uvs, selectedTriangleIndices, resolution, bgColor, fgColor, aaScale);
+        }
+
+        public static Texture2D Rasterize(
+            Mesh mesh,
+            int[] meshTriangles,
+            List<Vector2> uvs,
+            HashSet<int> selectedTriangleIndices,
+            int resolution,
+            Color bgColor,
+            Color fgColor,
+            int aaScale)
+        {
             if (mesh == null)
             {
                 throw new ArgumentNullException(nameof(mesh));
@@ -54,19 +90,14 @@ namespace IyanKim.UVMaskTool.Editor
                 throw new InvalidOperationException("UV data is missing or does not match the mesh vertex count.");
             }
 
-            if (islands == null)
-            {
-                throw new ArgumentNullException(nameof(islands));
-            }
-
             if (meshTriangles == null || meshTriangles.Length == 0)
             {
                 throw new InvalidOperationException("No triangles are available for the selected material slot.");
             }
 
-            if (selectedIds == null || selectedIds.Count == 0)
+            if (selectedTriangleIndices == null || selectedTriangleIndices.Count == 0)
             {
-                throw new InvalidOperationException("At least one UV island must be selected before export.");
+                throw new InvalidOperationException("Select at least one UV face before export.");
             }
 
             if (resolution <= 0)
@@ -90,18 +121,14 @@ namespace IyanKim.UVMaskTool.Editor
             }
 
             var fg = (Color32)fgColor;
-            for (var i = 0; i < islands.Count; i++)
+            foreach (var triangleIndex in selectedTriangleIndices)
             {
-                var island = islands[i];
-                if (!selectedIds.Contains(island.id))
+                if (triangleIndex < 0 || triangleIndex * 3 + 2 >= meshTriangles.Length)
                 {
                     continue;
                 }
 
-                for (var t = 0; t < island.triangleIndices.Count; t++)
-                {
-                    RasterizeTriangle(meshTriangles, uvs, island.triangleIndices[t], workingSize, pixels, fg);
-                }
+                RasterizeTriangle(meshTriangles, uvs, triangleIndex, workingSize, pixels, fg);
             }
 
             if (aaScale > 1)

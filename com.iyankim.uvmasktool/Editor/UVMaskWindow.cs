@@ -38,32 +38,50 @@ namespace IyanKim.UVMaskTool.Editor
             SSAA4x = 4
         }
 
+        private enum SelectionMode
+        {
+            Island,
+            Face
+        }
+
         private Renderer targetRenderer;
         private Mesh currentMesh;
         private int[] currentTriangles = Array.Empty<int>();
         private List<Vector2> currentUvs;
+        private Vector2[] currentUvArray = Array.Empty<Vector2>();
+        private Rect[] currentTriangleBounds = Array.Empty<Rect>();
+        private int[] currentIslandByTriangle = Array.Empty<int>();
+        private Vector2Int[] currentWireEdges = Array.Empty<Vector2Int>();
         private List<UVIsland> islands = new List<UVIsland>();
-        private readonly HashSet<int> selectedIslandIds = new HashSet<int>();
+        private readonly HashSet<int> selectedTriangleIndices = new HashSet<int>();
+        private readonly List<int> selectableTriangleIndices = new List<int>();
         private readonly List<int> availableUvChannels = new List<int>();
         private readonly List<int> availableSubmeshIndices = new List<int>();
         private string[] materialSlotLabels = Array.Empty<string>();
 
         private ToolLanguage language = ToolLanguage.English;
+        private SelectionMode selectionMode = SelectionMode.Island;
         private int selectedMaterialSlotIndex;
         private int selectedSubmeshIndex = -1;
         private int uvChannel;
+        private int hoverTriangleIndex = -1;
         private int hoverIslandId = -1;
         private string statusMessage;
         private MessageType statusType = MessageType.Info;
         private Vector2 scrollPosition;
         private Vector2 previewPan;
         private float previewZoom = 1f;
+        private Texture2D previewTexture;
+        private float previewTextureAlpha = 0.85f;
+        private bool showPreviewTexture = true;
+        private bool showWireframe = true;
         private bool isPanning;
 
         private ResolutionPreset resolutionPreset = ResolutionPreset.R1024;
         private int customResolution = 1024;
         private Color backgroundColor = new Color(0f, 0f, 0f, 1f);
         private Color selectedColor = Color.white;
+        private Color wireframeColor = new Color(0.88f, 0.88f, 0.88f, 0.58f);
         private int padding;
         private AntiAliasing antiAliasing = AntiAliasing.Off;
         private bool includeAlpha = true;
@@ -158,6 +176,7 @@ namespace IyanKim.UVMaskTool.Editor
                 EditorGUILayout.LabelField(L("Triangles"), (currentMesh.triangles.Length / 3).ToString());
                 EditorGUILayout.LabelField(L("Material Triangles"), (currentTriangles.Length / 3).ToString());
                 EditorGUILayout.LabelField(L("Islands"), islands.Count.ToString());
+                EditorGUILayout.LabelField(L("Selectable Faces"), GetSelectableTriangleCount().ToString());
                 if (!currentMesh.isReadable)
                 {
                     EditorGUILayout.HelpBox(L("ReadWriteWarning"), MessageType.Warning);
@@ -185,6 +204,19 @@ namespace IyanKim.UVMaskTool.Editor
 
             using (new EditorGUILayout.HorizontalScope())
             {
+                EditorGUILayout.LabelField(L("Preview Texture"), GUILayout.Width(98f));
+                previewTexture = (Texture2D)EditorGUILayout.ObjectField(previewTexture, typeof(Texture2D), false, GUILayout.Width(220f));
+                using (new EditorGUI.DisabledScope(GetSelectedMaterialPreviewTexture() == null))
+                {
+                    if (GUILayout.Button(L("Use Material Texture"), GUILayout.Width(150f)))
+                    {
+                        previewTexture = GetSelectedMaterialPreviewTexture();
+                    }
+                }
+            }
+
+            using (new EditorGUILayout.HorizontalScope())
+            {
                 if (GUILayout.Button(L("Reset View"), GUILayout.Width(110f)))
                 {
                     previewZoom = 1f;
@@ -196,6 +228,22 @@ namespace IyanKim.UVMaskTool.Editor
                 previewZoom = EditorGUILayout.Slider(previewZoom, 0.1f, 12f);
             }
 
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                showPreviewTexture = EditorGUILayout.ToggleLeft(L("Show Texture"), showPreviewTexture, GUILayout.Width(130f));
+                using (new EditorGUI.DisabledScope(!showPreviewTexture))
+                {
+                    EditorGUILayout.LabelField(L("Texture Opacity"), GUILayout.Width(98f));
+                    previewTextureAlpha = EditorGUILayout.Slider(previewTextureAlpha, 0f, 1f);
+                }
+            }
+
+            showWireframe = EditorGUILayout.ToggleLeft(L("Wireframe"), showWireframe);
+            using (new EditorGUI.DisabledScope(!showWireframe))
+            {
+                wireframeColor = EditorGUILayout.ColorField(L("UV Wireframe Color"), wireframeColor);
+            }
+
             var previewHeight = Mathf.Clamp(position.height - 500f, 280f, 420f);
             var previewRect = GUILayoutUtility.GetRect(10f, previewHeight, GUILayout.ExpandWidth(true));
             var localRect = new Rect(0f, 0f, previewRect.width, previewRect.height);
@@ -204,12 +252,17 @@ namespace IyanKim.UVMaskTool.Editor
             HandlePreviewInput(previewRect, transform);
             UVPreviewRenderer.Draw(
                 previewRect,
-                currentMesh,
                 currentTriangles,
-                currentUvs,
+                currentUvArray,
                 islands,
-                selectedIslandIds,
+                selectedTriangleIndices,
+                hoverTriangleIndex,
                 hoverIslandId,
+                currentWireEdges,
+                showWireframe,
+                wireframeColor,
+                showPreviewTexture ? previewTexture : null,
+                previewTextureAlpha,
                 transform);
             EditorGUILayout.EndVertical();
         }
@@ -218,7 +271,18 @@ namespace IyanKim.UVMaskTool.Editor
         {
             EditorGUILayout.BeginVertical("box");
             EditorGUILayout.LabelField(L("Selection Info"), EditorStyles.boldLabel);
-            EditorGUILayout.LabelField(L("Selected Islands"), selectedIslandIds.Count.ToString());
+
+            var selectionModeLabels = new[] { L("Island"), L("Face") };
+            EditorGUI.BeginChangeCheck();
+            var nextSelectionMode = (SelectionMode)EditorGUILayout.Popup(L("Selection Mode"), (int)selectionMode, selectionModeLabels);
+            if (EditorGUI.EndChangeCheck())
+            {
+                SetSelectionMode(nextSelectionMode);
+            }
+
+            EditorGUILayout.LabelField(
+                selectionMode == SelectionMode.Island ? L("Selected Islands") : L("Selected Faces"),
+                selectionMode == SelectionMode.Island ? GetSelectedIslandCount().ToString() : selectedTriangleIndices.Count.ToString());
 
             using (new EditorGUILayout.HorizontalScope())
             {
@@ -226,41 +290,22 @@ namespace IyanKim.UVMaskTool.Editor
                 {
                     if (GUILayout.Button(L("Select All")))
                     {
-                        selectedIslandIds.Clear();
-                        for (var i = 0; i < islands.Count; i++)
-                        {
-                            selectedIslandIds.Add(islands[i].id);
-                        }
-
+                        SelectAll();
                         RepaintSceneAndWindow();
                     }
 
                     if (GUILayout.Button(L("Invert")))
                     {
-                        var next = new HashSet<int>();
-                        for (var i = 0; i < islands.Count; i++)
-                        {
-                            if (!selectedIslandIds.Contains(islands[i].id))
-                            {
-                                next.Add(islands[i].id);
-                            }
-                        }
-
-                        selectedIslandIds.Clear();
-                        foreach (var id in next)
-                        {
-                            selectedIslandIds.Add(id);
-                        }
-
+                        InvertSelection();
                         RepaintSceneAndWindow();
                     }
                 }
 
-                using (new EditorGUI.DisabledScope(selectedIslandIds.Count == 0))
+                using (new EditorGUI.DisabledScope(selectedTriangleIndices.Count == 0))
                 {
                     if (GUILayout.Button(L("Clear")))
                     {
-                        selectedIslandIds.Clear();
+                        ClearSelection();
                         RepaintSceneAndWindow();
                     }
                 }
@@ -311,8 +356,9 @@ namespace IyanKim.UVMaskTool.Editor
             var evt = Event.current;
             if (!previewRect.Contains(evt.mousePosition))
             {
-                if (hoverIslandId != -1 && evt.type == EventType.MouseMove)
+                if ((hoverIslandId != -1 || hoverTriangleIndex != -1) && evt.type == EventType.MouseMove)
                 {
+                    hoverTriangleIndex = -1;
                     hoverIslandId = -1;
                     Repaint();
                 }
@@ -365,34 +411,51 @@ namespace IyanKim.UVMaskTool.Editor
 
             if (evt.type == EventType.MouseMove || evt.type == EventType.MouseDrag)
             {
-                var nextHover = UVSelectionController.PickIsland(
+                var nextHoverTriangle = UVSelectionController.PickTriangle(
                     localMouse,
                     transform,
                     currentTriangles,
                     currentUvs,
-                    islands);
+                    currentTriangleBounds);
+                var nextHoverIsland = selectionMode == SelectionMode.Island ? GetIslandIdForTriangle(nextHoverTriangle) : -1;
 
-                if (hoverIslandId != nextHover)
+                if (hoverTriangleIndex != nextHoverTriangle || hoverIslandId != nextHoverIsland)
                 {
-                    hoverIslandId = nextHover;
+                    hoverTriangleIndex = nextHoverTriangle;
+                    hoverIslandId = nextHoverIsland;
                     Repaint();
                 }
             }
 
             if (evt.type == EventType.MouseDown && evt.button == 0 && !evt.alt)
             {
-                var picked = UVSelectionController.PickIsland(
+                var pickedTriangle = UVSelectionController.PickTriangle(
                     localMouse,
                     transform,
                     currentTriangles,
                     currentUvs,
-                    islands);
+                    currentTriangleBounds);
 
-                UVSelectionController.ApplyClick(
-                    selectedIslandIds,
-                    picked,
-                    evt.shift,
-                    evt.control || evt.command);
+                if (selectionMode == SelectionMode.Face)
+                {
+                    UVSelectionController.ApplyClick(
+                        selectedTriangleIndices,
+                        pickedTriangle,
+                        evt.shift,
+                        evt.control || evt.command);
+                }
+                else
+                {
+                    var pickedIsland = GetIslandForTriangle(pickedTriangle);
+                    if (pickedIsland != null)
+                    {
+                        UVSelectionController.ApplyGroupClick(
+                            selectedTriangleIndices,
+                            pickedIsland.triangleIndices,
+                            evt.shift,
+                            evt.control || evt.command);
+                    }
+                }
 
                 evt.Use();
                 RepaintSceneAndWindow();
@@ -404,14 +467,14 @@ namespace IyanKim.UVMaskTool.Editor
             currentMesh = ExtractMesh(targetRenderer);
             currentTriangles = Array.Empty<int>();
             currentUvs = null;
+            ClearPreviewCache();
             availableUvChannels.Clear();
             availableSubmeshIndices.Clear();
             materialSlotLabels = Array.Empty<string>();
             selectedMaterialSlotIndex = 0;
             selectedSubmeshIndex = -1;
             islands.Clear();
-            selectedIslandIds.Clear();
-            hoverIslandId = -1;
+            ClearSelection();
 
             if (targetRenderer == null)
             {
@@ -452,9 +515,9 @@ namespace IyanKim.UVMaskTool.Editor
                 : Array.Empty<int>();
 
             currentUvs = null;
+            ClearPreviewCache();
             islands.Clear();
-            selectedIslandIds.Clear();
-            hoverIslandId = -1;
+            ClearSelection();
             availableUvChannels.Clear();
             availableUvChannels.AddRange(UVIslandDetector.FindAvailableUvChannels(currentMesh, currentTriangles));
 
@@ -476,9 +539,9 @@ namespace IyanKim.UVMaskTool.Editor
         private void RebuildCurrentUvChannel()
         {
             currentUvs = null;
+            ClearPreviewCache();
             islands.Clear();
-            selectedIslandIds.Clear();
-            hoverIslandId = -1;
+            ClearSelection();
 
             try
             {
@@ -487,6 +550,7 @@ namespace IyanKim.UVMaskTool.Editor
                     ? currentMesh.GetTriangles(selectedSubmeshIndex)
                     : Array.Empty<int>();
                 islands = UVIslandDetector.GenerateIslands(currentMesh, currentUvs, currentTriangles);
+                RebuildPreviewCache();
                 statusMessage = islands.Count > 0
                     ? string.Format(L("GeneratedMessage"), islands.Count, currentMesh.name, selectedSubmeshIndex)
                     : L("NoIslandsMessage");
@@ -495,6 +559,7 @@ namespace IyanKim.UVMaskTool.Editor
             catch (Exception exception)
             {
                 currentUvs = null;
+                ClearPreviewCache();
                 islands.Clear();
                 statusMessage = exception.Message;
                 statusType = MessageType.Error;
@@ -532,8 +597,7 @@ namespace IyanKim.UVMaskTool.Editor
                     currentMesh,
                     currentTriangles,
                     currentUvs,
-                    islands,
-                    selectedIslandIds,
+                    selectedTriangleIndices,
                     resolution,
                     bg,
                     fg,
@@ -561,7 +625,7 @@ namespace IyanKim.UVMaskTool.Editor
                 && currentTriangles.Length > 0
                 && currentUvs != null
                 && islands.Count > 0
-                && selectedIslandIds.Count > 0
+                && selectedTriangleIndices.Count > 0
                 && resolution > 0
                 && resolution <= 8192;
         }
@@ -604,7 +668,7 @@ namespace IyanKim.UVMaskTool.Editor
 
         private void OnSceneGUI(SceneView sceneView)
         {
-            if (!sceneViewHighlight || targetRenderer == null || currentMesh == null || currentTriangles == null || currentTriangles.Length == 0 || selectedIslandIds.Count == 0 || islands.Count == 0)
+            if (!sceneViewHighlight || targetRenderer == null || currentMesh == null || currentTriangles == null || currentTriangles.Length == 0 || selectedTriangleIndices.Count == 0)
             {
                 return;
             }
@@ -615,30 +679,200 @@ namespace IyanKim.UVMaskTool.Editor
             var drawnTriangles = 0;
             Handles.color = new Color(1f, 0.62f, 0.1f, 0.85f);
 
-            for (var i = 0; i < islands.Count; i++)
+            foreach (var triangleIndex in selectedTriangleIndices)
             {
-                var island = islands[i];
-                if (!selectedIslandIds.Contains(island.id))
+                var baseIndex = triangleIndex * 3;
+                if (triangleIndex < 0 || baseIndex + 2 >= meshTriangles.Length)
                 {
                     continue;
                 }
 
-                for (var t = 0; t < island.triangleIndices.Count; t++)
-                {
-                    var triangleIndex = island.triangleIndices[t];
-                    var baseIndex = triangleIndex * 3;
-                    var a = matrix.MultiplyPoint3x4(vertices[meshTriangles[baseIndex]]);
-                    var b = matrix.MultiplyPoint3x4(vertices[meshTriangles[baseIndex + 1]]);
-                    var c = matrix.MultiplyPoint3x4(vertices[meshTriangles[baseIndex + 2]]);
-                    Handles.DrawAAPolyLine(3f, a, b, c, a);
+                var a = matrix.MultiplyPoint3x4(vertices[meshTriangles[baseIndex]]);
+                var b = matrix.MultiplyPoint3x4(vertices[meshTriangles[baseIndex + 1]]);
+                var c = matrix.MultiplyPoint3x4(vertices[meshTriangles[baseIndex + 2]]);
+                Handles.DrawAAPolyLine(3f, a, b, c, a);
 
-                    drawnTriangles++;
-                    if (drawnTriangles > 5000)
+                drawnTriangles++;
+                if (drawnTriangles > 5000)
+                {
+                    return;
+                }
+            }
+        }
+
+        private void SetSelectionMode(SelectionMode nextMode)
+        {
+            if (selectionMode == nextMode)
+            {
+                return;
+            }
+
+            selectionMode = nextMode;
+            ClearSelection();
+            RepaintSceneAndWindow();
+        }
+
+        private void SelectAll()
+        {
+            selectedTriangleIndices.Clear();
+            for (var i = 0; i < selectableTriangleIndices.Count; i++)
+            {
+                selectedTriangleIndices.Add(selectableTriangleIndices[i]);
+            }
+        }
+
+        private void InvertSelection()
+        {
+            var nextSelection = new HashSet<int>();
+            if (selectionMode == SelectionMode.Face)
+            {
+                for (var i = 0; i < selectableTriangleIndices.Count; i++)
+                {
+                    var triangleIndex = selectableTriangleIndices[i];
+                    if (!selectedTriangleIndices.Contains(triangleIndex))
                     {
-                        return;
+                        nextSelection.Add(triangleIndex);
                     }
                 }
             }
+            else
+            {
+                for (var i = 0; i < islands.Count; i++)
+                {
+                    var triangleIndices = islands[i].triangleIndices;
+                    var isFullySelected = triangleIndices.Count > 0;
+                    for (var t = 0; t < triangleIndices.Count; t++)
+                    {
+                        if (!selectedTriangleIndices.Contains(triangleIndices[t]))
+                        {
+                            isFullySelected = false;
+                            break;
+                        }
+                    }
+
+                    if (isFullySelected)
+                    {
+                        continue;
+                    }
+
+                    for (var t = 0; t < triangleIndices.Count; t++)
+                    {
+                        nextSelection.Add(triangleIndices[t]);
+                    }
+                }
+            }
+
+            selectedTriangleIndices.Clear();
+            foreach (var triangleIndex in nextSelection)
+            {
+                selectedTriangleIndices.Add(triangleIndex);
+            }
+        }
+
+        private void ClearSelection()
+        {
+            selectedTriangleIndices.Clear();
+            hoverTriangleIndex = -1;
+            hoverIslandId = -1;
+        }
+
+        private int GetSelectableTriangleCount()
+        {
+            return selectableTriangleIndices.Count;
+        }
+
+        private int GetSelectedIslandCount()
+        {
+            var count = 0;
+            for (var i = 0; i < islands.Count; i++)
+            {
+                var triangleIndices = islands[i].triangleIndices;
+                if (triangleIndices.Count == 0)
+                {
+                    continue;
+                }
+
+                var isFullySelected = true;
+                for (var t = 0; t < triangleIndices.Count; t++)
+                {
+                    if (!selectedTriangleIndices.Contains(triangleIndices[t]))
+                    {
+                        isFullySelected = false;
+                        break;
+                    }
+                }
+
+                if (isFullySelected)
+                {
+                    count++;
+                }
+            }
+
+            return count;
+        }
+
+        private UVIsland GetIslandForTriangle(int triangleIndex)
+        {
+            var islandId = GetIslandIdForTriangle(triangleIndex);
+            return islandId >= 0 && islandId < islands.Count ? islands[islandId] : null;
+        }
+
+        private int GetIslandIdForTriangle(int triangleIndex)
+        {
+            if (triangleIndex < 0 || currentIslandByTriangle == null || triangleIndex >= currentIslandByTriangle.Length)
+            {
+                return -1;
+            }
+
+            return currentIslandByTriangle[triangleIndex];
+        }
+
+        private Texture2D GetSelectedMaterialPreviewTexture()
+        {
+            if (targetRenderer == null || selectedSubmeshIndex < 0)
+            {
+                return null;
+            }
+
+            var materials = targetRenderer.sharedMaterials;
+            if (materials == null || selectedSubmeshIndex >= materials.Length)
+            {
+                return null;
+            }
+
+            var material = materials[selectedSubmeshIndex];
+            if (material == null || material.mainTexture == null)
+            {
+                return null;
+            }
+
+            return material.mainTexture as Texture2D;
+        }
+
+        private void RebuildPreviewCache()
+        {
+            currentUvArray = currentUvs != null ? currentUvs.ToArray() : Array.Empty<Vector2>();
+            currentTriangleBounds = UVPreviewRenderer.BuildTriangleBounds(currentTriangles, currentUvs);
+            currentIslandByTriangle = UVPreviewRenderer.BuildIslandMembership(islands, currentTriangles != null ? currentTriangles.Length / 3 : 0);
+            currentWireEdges = UVPreviewRenderer.BuildWireEdges(currentTriangles);
+
+            selectableTriangleIndices.Clear();
+            for (var triangleIndex = 0; triangleIndex < currentIslandByTriangle.Length; triangleIndex++)
+            {
+                if (currentIslandByTriangle[triangleIndex] >= 0)
+                {
+                    selectableTriangleIndices.Add(triangleIndex);
+                }
+            }
+        }
+
+        private void ClearPreviewCache()
+        {
+            currentUvArray = Array.Empty<Vector2>();
+            currentTriangleBounds = Array.Empty<Rect>();
+            currentIslandByTriangle = Array.Empty<int>();
+            currentWireEdges = Array.Empty<Vector2Int>();
+            selectableTriangleIndices.Clear();
         }
 
         private static Mesh ExtractMesh(Renderer renderer)
@@ -758,9 +992,20 @@ namespace IyanKim.UVMaskTool.Editor
             switch (key)
             {
                 case "Window Title": return "UV Island Mask Generator";
-                case "HelpText": return "Select a Renderer and material slot, click UV islands, then export a mask PNG.\nThe UV channel is selected automatically from the chosen material slot.";
+                case "HelpText": return "Select a Renderer and material slot, choose Island or Face mode, optionally overlay a texture, then click UV selections to export a mask PNG.\nThe UV channel is selected automatically from the chosen material slot.";
                 case "Material Slot": return "Material Slot";
                 case "Material Triangles": return "Material Triangles";
+                case "Selectable Faces": return "Selectable Faces";
+                case "Preview Texture": return "Preview Texture";
+                case "Use Material Texture": return "Use Material Texture";
+                case "Show Texture": return "Show Texture";
+                case "Texture Opacity": return "Texture Opacity";
+                case "Wireframe": return "Wireframe";
+                case "UV Wireframe Color": return "UV Wireframe Color";
+                case "Selection Mode": return "Selection Mode";
+                case "Island": return "Island";
+                case "Face": return "Face";
+                case "Selected Faces": return "Selected Faces";
                 case "No Material": return "No Material";
                 case "ReadWriteWarning": return "Read/Write is disabled. If island detection or export fails, enable Read/Write in the model import settings.";
                 case "SelectRendererMessage": return "Select a SkinnedMeshRenderer or MeshRenderer.";
