@@ -87,7 +87,7 @@ namespace IyanKim.UVMaskTool.Editor
         private bool includeAlpha = true;
         private bool sceneViewHighlight = true;
 
-        [MenuItem("Iyan-Kim/Tools/UV Island Mask Generator")]
+        [MenuItem("Studio Iyan/Tools/UV Island Mask Generator")]
         public static void Open()
         {
             var window = GetWindow<UVMaskWindow>("UV Mask Generator");

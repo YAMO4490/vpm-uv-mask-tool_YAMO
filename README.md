@@ -1,8 +1,8 @@
-# **Iyan-Kim UV Mask Tool**
+# **Studio Iyan UV Mask Tool**
 
 ### _Material-slot based UV island mask generation for Unity Editor_
 
-`Iyan-Kim UV Mask Tool` is a Unity **Editor-only utility** for selecting UV islands from a renderer's material slot and exporting them as **PNG mask textures**.  
+`Studio Iyan UV Mask Tool` is a Unity **Editor-only utility** for selecting UV islands from a renderer's material slot and exporting them as **PNG mask textures**.  
 It helps artists and avatar creators quickly generate texture masks from complex meshes without manually repainting UV areas in external tools.
 
 ✔ 100% Editor-only tool  
@@ -15,7 +15,7 @@ It helps artists and avatar creators quickly generate texture masks from complex
 
 ## 🔧 **Features**
 
-Iyan-Kim UV Mask Tool streamlines UV mask creation by providing:
+Studio Iyan UV Mask Tool streamlines UV mask creation by providing:
 
 ### 🧩 **Material Slot Based UV Detection**
 
@@ -67,7 +67,7 @@ Iyan-Kim UV Mask Tool streamlines UV mask creation by providing:
 
 Click:
 
-👉 **[Add Iyan-Kim VPM Repository to VCC](vcc://vpm/addRepo?url=https://raw.githubusercontent.com/Yunhyuk-Jeong/iyan-vpm/main/vpm.json)**
+👉 **[Add Studio Iyan VPM Repository to VCC](vcc://vpm/addRepo?url=https://raw.githubusercontent.com/Yunhyuk-Jeong/iyan-vpm/main/vpm.json)**
 
 Or add manually:
 
@@ -122,7 +122,7 @@ LICENSE
 ## 🛠 Menu Path
 
 ```text
-Iyan-Kim/Tools/UV Island Mask Generator
+Studio Iyan/Tools/UV Island Mask Generator
 ```
 
 ---
@@ -137,7 +137,7 @@ You are free to use, modify, and redistribute this tool in both personal and com
 
 ## 🙏 Credits
 
-**Tool Design & Implementation**: _Iyan-Kim_  
+**Tool Design & Implementation**: _Studio Iyan_  
 **Purpose**: Make UV island based mask generation faster for Unity, VRChat avatar, and texture authoring workflows.
 
 ---
