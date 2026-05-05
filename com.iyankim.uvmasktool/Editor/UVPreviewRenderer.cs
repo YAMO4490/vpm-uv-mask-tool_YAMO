@@ -10,7 +10,7 @@ namespace IyanKim.UVMaskTool.Editor
         private static readonly Color GridMajor = new Color(1f, 1f, 1f, 0.12f);
         private static readonly Color GridMinor = new Color(1f, 1f, 1f, 0.05f);
         private static readonly Color HoverFill = new Color(0.72f, 0.86f, 1f, 0.55f);
-        private static readonly Color SelectedFill = new Color(1f, 0.67f, 0.15f, 0.72f);
+        private static readonly Color BrushOutline = new Color(1f, 1f, 1f, 0.92f);
 
         public readonly struct ViewTransform
         {
@@ -157,6 +157,7 @@ namespace IyanKim.UVMaskTool.Editor
             Rect previewRect,
             int[] meshTriangles,
             Vector2[] uvs,
+            Vector2[] screenUvs,
             List<UVIsland> islands,
             HashSet<int> selectedTriangleIndices,
             int hoverTriangleIndex,
@@ -164,6 +165,12 @@ namespace IyanKim.UVMaskTool.Editor
             Vector2Int[] wireEdges,
             bool showWireframe,
             Color wireframeColor,
+            Color selectedFillColor,
+            Texture2D selectedOverlayTexture,
+            Texture2D wireframeOverlayTexture,
+            bool showBrushCursor,
+            Vector2 brushCursorPosition,
+            float brushRadiusPixels,
             Texture2D previewTexture,
             float previewTextureAlpha,
             ViewTransform transform)
@@ -179,13 +186,35 @@ namespace IyanKim.UVMaskTool.Editor
 
             if (meshTriangles != null && uvs != null)
             {
-                var screenUvs = BuildScreenUvs(uvs, transform);
+                screenUvs = screenUvs != null && screenUvs.Length == uvs.Length
+                    ? screenUvs
+                    : BuildScreenUvs(uvs, transform);
                 DrawHoverFills(meshTriangles, screenUvs, islands, selectedTriangleIndices, hoverTriangleIndex, hoverIslandId);
-                DrawSelectedFills(meshTriangles, screenUvs, selectedTriangleIndices);
+                if (selectedOverlayTexture != null)
+                {
+                    DrawOverlayTexture(selectedOverlayTexture);
+                }
+                else
+                {
+                    DrawSelectedFills(meshTriangles, screenUvs, selectedTriangleIndices, selectedFillColor);
+                }
+
                 if (showWireframe)
                 {
-                    DrawWireframe(wireEdges, meshTriangles, screenUvs, wireframeColor);
+                    if (wireframeOverlayTexture != null)
+                    {
+                        DrawOverlayTexture(wireframeOverlayTexture);
+                    }
+                    else
+                    {
+                        DrawWireframe(wireEdges, meshTriangles, screenUvs, wireframeColor);
+                    }
                 }
+            }
+
+            if (showBrushCursor && brushRadiusPixels > 0.001f)
+            {
+                DrawBrushCursor(brushCursorPosition, brushRadiusPixels);
             }
 
             Handles.EndGUI();
@@ -331,14 +360,15 @@ namespace IyanKim.UVMaskTool.Editor
         private static void DrawSelectedFills(
             int[] meshTriangles,
             Vector2[] screenUvs,
-            HashSet<int> selectedTriangleIndices)
+            HashSet<int> selectedTriangleIndices,
+            Color selectedFillColor)
         {
             if (selectedTriangleIndices == null || selectedTriangleIndices.Count == 0)
             {
                 return;
             }
 
-            Handles.color = SelectedFill;
+            Handles.color = selectedFillColor;
             foreach (var triangleIndex in selectedTriangleIndices)
             {
                 DrawTriangle(meshTriangles, screenUvs, triangleIndex);
@@ -398,6 +428,16 @@ namespace IyanKim.UVMaskTool.Editor
             GUI.color = previousColor;
         }
 
+        private static void DrawOverlayTexture(Texture2D overlayTexture)
+        {
+            if (overlayTexture == null)
+            {
+                return;
+            }
+
+            GUI.DrawTexture(new Rect(0f, 0f, overlayTexture.width, overlayTexture.height), overlayTexture, ScaleMode.StretchToFill, true);
+        }
+
         private static Vector2[] BuildScreenUvs(Vector2[] uvs, ViewTransform transform)
         {
             var screenUvs = new Vector2[uvs.Length];
@@ -426,6 +466,12 @@ namespace IyanKim.UVMaskTool.Editor
             }
 
             Handles.DrawAAConvexPolygon(screenUvs[a], screenUvs[b], screenUvs[c]);
+        }
+
+        private static void DrawBrushCursor(Vector2 center, float radius)
+        {
+            Handles.color = BrushOutline;
+            Handles.DrawWireDisc(center, Vector3.forward, radius, 1.6f);
         }
 
         private static void DrawUvLine(ViewTransform transform, Vector2 fromUv, Vector2 toUv, Color color, float width)

@@ -23,6 +23,17 @@ namespace IyanKim.UVMaskTool.Editor
             List<Vector2> uvs,
             Rect[] triangleBounds)
         {
+            return PickTriangle(localMousePosition, transform, meshTriangles, uvs, triangleBounds, null);
+        }
+
+        public static int PickTriangle(
+            Vector2 localMousePosition,
+            UVPreviewRenderer.ViewTransform transform,
+            int[] meshTriangles,
+            List<Vector2> uvs,
+            Rect[] triangleBounds,
+            IList<int> candidateTriangleIndices)
+        {
             if (meshTriangles == null || uvs == null || meshTriangles.Length < 3)
             {
                 return -1;
@@ -31,13 +42,19 @@ namespace IyanKim.UVMaskTool.Editor
             var uvPoint = transform.ScreenToUv(localMousePosition);
             var pickedTriangleIndex = -1;
             var pickedArea = float.MaxValue;
-
-            for (var i = 0; i + 2 < meshTriangles.Length; i += 3)
+            var candidateCount = candidateTriangleIndices != null ? candidateTriangleIndices.Count : meshTriangles.Length / 3;
+            for (var candidateIndex = 0; candidateIndex < candidateCount; candidateIndex++)
             {
-                var triangleIndex = i / 3;
-                var a = meshTriangles[i];
-                var b = meshTriangles[i + 1];
-                var c = meshTriangles[i + 2];
+                var triangleIndex = candidateTriangleIndices != null ? candidateTriangleIndices[candidateIndex] : candidateIndex;
+                var baseIndex = triangleIndex * 3;
+                if (triangleIndex < 0 || baseIndex + 2 >= meshTriangles.Length)
+                {
+                    continue;
+                }
+
+                var a = meshTriangles[baseIndex];
+                var b = meshTriangles[baseIndex + 1];
+                var c = meshTriangles[baseIndex + 2];
                 if (!IsValidVertexIndex(a, uvs.Count) || !IsValidVertexIndex(b, uvs.Count) || !IsValidVertexIndex(c, uvs.Count))
                 {
                     continue;
@@ -195,6 +212,72 @@ namespace IyanKim.UVMaskTool.Editor
             return -1;
         }
 
+        public static float GetBrushUvRadius(UVPreviewRenderer.ViewTransform transform, float brushRadiusPixels)
+        {
+            return EstimateUvRadius(transform, brushRadiusPixels);
+        }
+
+        public static bool ApplyBrush(
+            HashSet<int> selectedIds,
+            Vector2 uvCenter,
+            float uvRadius,
+            int[] meshTriangles,
+            List<Vector2> uvs,
+            Rect[] triangleBounds,
+            IList<int> candidateTriangleIndices,
+            bool erase)
+        {
+            if (selectedIds == null || meshTriangles == null || uvs == null || uvRadius <= 0.000001f)
+            {
+                return false;
+            }
+
+            var uvRadiusSqr = uvRadius * uvRadius;
+            var changed = false;
+            var candidateCount = candidateTriangleIndices != null ? candidateTriangleIndices.Count : meshTriangles.Length / 3;
+            for (var candidateIndex = 0; candidateIndex < candidateCount; candidateIndex++)
+            {
+                var triangleIndex = candidateTriangleIndices != null ? candidateTriangleIndices[candidateIndex] : candidateIndex;
+                var baseIndex = triangleIndex * 3;
+                if (triangleIndex < 0 || baseIndex + 2 >= meshTriangles.Length)
+                {
+                    continue;
+                }
+
+                if (triangleBounds != null && triangleIndex < triangleBounds.Length && !IntersectsExpandedBounds(triangleBounds[triangleIndex], uvCenter, uvRadius))
+                {
+                    continue;
+                }
+
+                var a = meshTriangles[baseIndex];
+                var b = meshTriangles[baseIndex + 1];
+                var c = meshTriangles[baseIndex + 2];
+                if (!IsValidVertexIndex(a, uvs.Count) || !IsValidVertexIndex(b, uvs.Count) || !IsValidVertexIndex(c, uvs.Count))
+                {
+                    continue;
+                }
+
+                var uvA = uvs[a];
+                var uvB = uvs[b];
+                var uvC = uvs[c];
+                if (!CircleIntersectsTriangle(uvCenter, uvRadiusSqr, uvA, uvB, uvC))
+                {
+                    continue;
+                }
+
+                if (erase)
+                {
+                    changed |= selectedIds.Remove(triangleIndex);
+                }
+                else
+                {
+                    changed |= selectedIds.Add(triangleIndex);
+                }
+            }
+
+            return changed;
+        }
+
         private static bool ContainsWithPadding(Rect bounds, Vector2 point)
         {
             const float padding = 0.0001f;
@@ -202,6 +285,14 @@ namespace IyanKim.UVMaskTool.Editor
                 && point.x <= bounds.xMax + padding
                 && point.y >= bounds.yMin - padding
                 && point.y <= bounds.yMax + padding;
+        }
+
+        private static bool IntersectsExpandedBounds(Rect bounds, Vector2 center, float radius)
+        {
+            return center.x >= bounds.xMin - radius
+                && center.x <= bounds.xMax + radius
+                && center.y >= bounds.yMin - radius
+                && center.y <= bounds.yMax + radius;
         }
 
         private static bool IsValidVertexIndex(int index, int vertexCount)
@@ -226,6 +317,46 @@ namespace IyanKim.UVMaskTool.Editor
         private static float SignedArea(Vector2 a, Vector2 b, Vector2 c)
         {
             return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+        }
+
+        private static float EstimateUvRadius(UVPreviewRenderer.ViewTransform transform, float brushRadiusPixels)
+        {
+            var uvCenter = transform.ScreenToUv(Vector2.zero);
+            var uvOffset = transform.ScreenToUv(new Vector2(brushRadiusPixels, 0f));
+            return Vector2.Distance(uvCenter, uvOffset);
+        }
+
+        private static bool CircleIntersectsTriangle(Vector2 center, float radiusSqr, Vector2 a, Vector2 b, Vector2 c)
+        {
+            if (PointInTriangle(center, a, b, c))
+            {
+                return true;
+            }
+
+            if ((a - center).sqrMagnitude <= radiusSqr
+                || (b - center).sqrMagnitude <= radiusSqr
+                || (c - center).sqrMagnitude <= radiusSqr)
+            {
+                return true;
+            }
+
+            return DistanceToSegmentSqr(center, a, b) <= radiusSqr
+                || DistanceToSegmentSqr(center, b, c) <= radiusSqr
+                || DistanceToSegmentSqr(center, c, a) <= radiusSqr;
+        }
+
+        private static float DistanceToSegmentSqr(Vector2 point, Vector2 a, Vector2 b)
+        {
+            var ab = b - a;
+            var abSqr = ab.sqrMagnitude;
+            if (abSqr <= Mathf.Epsilon)
+            {
+                return (point - a).sqrMagnitude;
+            }
+
+            var t = Mathf.Clamp01(Vector2.Dot(point - a, ab) / abSqr);
+            var closest = a + ab * t;
+            return (point - closest).sqrMagnitude;
         }
     }
 }
