@@ -133,7 +133,7 @@ namespace IyanKim.UVMaskTool.Editor
         private bool sceneViewHighlight = true;
         private bool pauseSceneOverlayWhileBrushing;
 
-        [MenuItem("Studio Iyan/Tools/UV Island Mask Generator")]
+        [MenuItem("Tools/UV Mask Tool/UV Island Mask Generator")]
         public static void Open()
         {
             var window = GetWindow<UVMaskWindow>("UV Mask Generator");
